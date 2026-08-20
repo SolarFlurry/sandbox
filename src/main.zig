@@ -48,7 +48,7 @@ pub fn render(r: *Render, s: *Sandbox) void {
 
 pub fn main(init: std.process.Init) !void {
     var sandbox: Sandbox = try .init(init.gpa);
-    defer sandbox.deinit(init.gpa);
+    defer sandbox.deinit();
 
     rl.initWindow(screen_width, screen_height, "sandbox");
     defer rl.closeWindow();

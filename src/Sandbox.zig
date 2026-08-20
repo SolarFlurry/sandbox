@@ -5,11 +5,22 @@ const Material = @import("Material.zig");
 
 const getMaterial = Material.getMaterial;
 
+allocator: std.mem.Allocator,
 buffer: []Cell,
+chunks: [sandbox_width * sandbox_height / 64 / 64]Chunk,
 current_frame: u32 = 0,
 
 pub const sandbox_width: u32 = 512;
 pub const sandbox_height: u32 = 256;
+
+const Chunk = struct {
+    moves: std.ArrayList(Move) = .empty,
+};
+
+const Move = struct {
+    from: usize,
+    to: usize,
+};
 
 const Cell = struct {
     kind: Material.Index,
@@ -24,14 +35,17 @@ const MoveSuccess = enum {
 const FallDir = enum {
     left,
     right,
-    down,
+    down_left,
+    down_right,
 };
 
 pub const Error = error{OutOfBounds};
 
 pub fn init(allocator: std.mem.Allocator) std.mem.Allocator.Error!Sandbox {
     const sandbox: Sandbox = .{
+        .allocator = allocator,
         .buffer = try allocator.alloc(Cell, @intCast(sandbox_width * sandbox_height)),
+        .chunks = @splat(.{}),
     };
     @memset(sandbox.buffer, .{
         .last_updated_frame = 0,
@@ -40,8 +54,11 @@ pub fn init(allocator: std.mem.Allocator) std.mem.Allocator.Error!Sandbox {
     return sandbox;
 }
 
-pub fn deinit(self: *Sandbox, allocator: std.mem.Allocator) void {
-    allocator.free(self.buffer);
+pub fn deinit(s: *Sandbox) void {
+    s.allocator.free(s.buffer);
+    for (&s.chunks) |*chunk| {
+        chunk.moves.deinit(s.allocator);
+    }
 }
 
 pub fn updateBottomTop(s: *Sandbox, random: std.Random) Sandbox.Error!void {
@@ -78,14 +95,14 @@ pub fn updateBottomTop(s: *Sandbox, random: std.Random) Sandbox.Error!void {
 }
 
 pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std.Io.Cancelable || std.Io.ConcurrentError)!void {
-    var offsets: [4][2]u8 = .{
+    const offsets: [4][2]u8 = .{
         .{ 0, 0 },
         .{ 0, 1 },
         .{ 1, 0 },
         .{ 1, 1 },
     };
 
-    random.shuffle([2]u8, &offsets);
+    // random.shuffle([2]u8, &offsets);
 
     var group: std.Io.Group = .init;
 
@@ -124,6 +141,8 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
 
+    const chunk = &s.chunks[@as(usize, @intCast(y)) * sandbox_width / 64 / 64 + @as(usize, @intCast(x)) / 64];
+
     for (0..64) |j| {
         const y_iter: i32 = 64 - @as(i32, @intCast(j)) - 1 + y;
         if (y_iter < 0 or y_iter >= sandbox_height) continue;
@@ -146,12 +165,14 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
 
             switch (cell.kind) {
                 .none => continue,
-                .sand => s.updateSolid(fall_bias, x_iter, y_iter),
-                .water => s.updateLiquid(fall_bias, x_iter, y_iter, x),
+                .sand => s.updateSolid(chunk, fall_bias, x_iter, y_iter),
+                .water => s.updateLiquid(chunk, fall_bias, x_iter, y_iter, x),
                 .stone => continue,
             }
         }
     }
+
+    s.resolveMoves(chunk, random) catch {};
 }
 
 pub fn locToIndex(x: i32, y: i32) usize {
@@ -163,10 +184,11 @@ pub fn get(self: *Sandbox, x: i32, y: i32) Cell {
 }
 
 pub fn set(self: *Sandbox, kind: Material.Index, x: i32, y: i32) void {
-    self.buffer[locToIndex(x, y)] = .{
-        .kind = kind,
-        .last_updated_frame = self.current_frame,
-    };
+    const idx = locToIndex(x, y);
+
+    if (kind != .none) self.buffer[idx].last_updated_frame = self.current_frame;
+
+    self.buffer[locToIndex(x, y)].kind = kind;
 }
 
 pub fn setBoundsCheck(s: *Sandbox, kind: Material.Index, x: i32, y: i32) bool {
@@ -183,14 +205,15 @@ pub fn fill(self: *Sandbox, kind: Material.Index, x: i32, y: i32, width: i32, he
     }
 }
 
+// returns error.AlreadySet if the target cell ahs already been set in the same frame
 pub fn setNoUpdated(self: *Sandbox, kind: Material.Index, x: i32, y: i32) (Error || error{AlreadySet})!void {
     if (x < 0 or x >= sandbox_width or y < 0 or y >= sandbox_height) return Error.OutOfBounds;
     const idx = locToIndex(x, y);
     if (self.buffer[idx].last_updated_frame == self.current_frame) return error.AlreadySet;
-    self.buffer[idx] = .{
-        .kind = kind,
-        .last_updated_frame = self.current_frame,
-    };
+
+    if (kind != .none) self.buffer[idx].last_updated_frame = self.current_frame;
+
+    self.buffer[locToIndex(x, y)].kind = kind;
 }
 
 pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
@@ -215,17 +238,79 @@ fn moveParticle(s: *Sandbox, x: i32, y: i32, x1: i32, y1: i32) MoveSuccess {
     return .failed;
 }
 
-fn updateSolid(s: *Sandbox, bias: FallDir, x: i32, y: i32) void {
+fn moveCell(s: *Sandbox, chunk: *Chunk, from: usize, to: usize) std.mem.Allocator.Error!void {
+    try chunk.moves.append(s.allocator, .{
+        .from = from,
+        .to = to,
+    });
+}
+
+fn resolveMoves(s: *Sandbox, chunk: *Chunk, random: std.Random) std.mem.Allocator.Error!void {
+    std.mem.sort(
+        Move,
+        chunk.moves.items,
+        {},
+        struct {
+            pub fn inner(_: void, a: Move, b: Move) bool {
+                return a.to < b.to;
+            }
+        }.inner,
+    );
+
+    try chunk.moves.append(s.allocator, .{ .from = 0, .to = 0 });
+
+    var dest_start: usize = 0;
+    for (0..chunk.moves.items.len - 1) |i| {
+        if (chunk.moves.items[i].to != chunk.moves.items[i + 1].to) {
+            const idx = random.intRangeAtMost(usize, dest_start, i);
+
+            const move = chunk.moves.items[idx];
+            const kind = s.buffer[move.from].kind;
+
+            s.buffer[move.from] = s.buffer[move.to];
+            s.buffer[move.to] = .{
+                .kind = kind,
+                .last_updated_frame = s.current_frame,
+            };
+
+            dest_start = i + 1;
+        }
+    }
+
+    chunk.moves.clearRetainingCapacity();
+}
+
+fn updateSolid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32) void {
     if (y == sandbox_height) return;
 
     const offsets: [3]i32 = switch (bias) {
-        .down => .{ 0, -1, 1 },
+        .down_left => .{ 0, -1, 1 },
+        .down_right => .{ 0, 1, -1 },
         .left => .{ -1, 0, 1 },
         .right => .{ 1, 0, -1 },
     };
 
     for (offsets) |offset| {
-        if (s.moveParticle(x, y, x + offset, y + 1) == .success) return;
+        const target_x = x + offset;
+        const target_y = y + 1;
+
+        const target_cell = s.getBoundsCheck(target_x, target_y) orelse continue;
+
+        if (target_cell.last_updated_frame == s.current_frame) continue;
+
+        const kind = s.get(x, y).kind;
+
+        const mat0 = getMaterial(kind);
+        const mat1 = getMaterial(target_cell.kind);
+
+        if (mat1.density >= mat0.density) continue;
+
+        const source_idx = locToIndex(x, y);
+        const target_idx = locToIndex(target_x, target_y);
+
+        s.moveCell(chunk, source_idx, target_idx) catch continue;
+
+        break;
     }
 }
 
@@ -246,36 +331,70 @@ fn disperseParticle(s: *Sandbox, x: i32, y: i32, dispersion_rate: u8, direction:
     return if (dispersed) .success else .failed;
 }
 
-fn updateLiquid(s: *Sandbox, bias: FallDir, x: i32, y: i32, chunk_x: i32) void {
+fn updateLiquid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32, chunk_x: i32) void {
     if (y == sandbox_height) return;
+    _ = chunk_x;
 
-    // const material = getMaterial(kind);
-
-    const offsets: [5][2]i8 = switch (bias) {
-        .down => .{ .{ 0, 1 }, .{ -1, 1 }, .{ 1, 1 }, .{ -1, 0 }, .{ 1, 0 } },
-        .left => .{ .{ -1, 1 }, .{ 0, 1 }, .{ 1, 1 }, .{ -1, 0 }, .{ 1, 0 } },
-        .right => .{ .{ 1, 1 }, .{ 0, 1 }, .{ -1, 1 }, .{ 1, 0 }, .{ -1, 0 } },
+    const offsets: [3]i8 = switch (bias) {
+        .down_left => .{ 0, -1, 1 },
+        .down_right => .{ 0, 1, -1 },
+        .left => .{ -1, 0, 1 },
+        .right => .{ 1, 0, -1 },
     };
 
-    for (offsets) |offset| {
-        const target_x = x + offset[0];
-        const target_y = y + offset[1];
+    const kind = s.get(x, y).kind;
+    const mat0 = getMaterial(kind);
 
-        if (offset[1] == 0 and x == chunk_x + 63) {
-            if (s.getBoundsCheck(x + 1, target_y)) |cell| {
-                if (cell.kind != .none) continue;
-            }
-        }
-        if (offset[1] == 0 and x == chunk_x) {
-            if (s.getBoundsCheck(x - 1, target_y)) |cell| {
-                if (cell.kind != .none) continue;
-            }
+    outer: for (offsets) |dispersion_dir| {
+        if (dispersion_dir == 0) {
+            const target_cell = s.getBoundsCheck(x, y + 1) orelse continue;
+
+            if (target_cell.last_updated_frame == s.current_frame) continue;
+
+            const mat1 = getMaterial(target_cell.kind);
+
+            if (mat1.density >= mat0.density) continue;
+
+            const source_idx = locToIndex(x, y);
+            const target_idx = locToIndex(x, y + 1);
+
+            s.moveCell(chunk, source_idx, target_idx) catch continue;
+
+            break;
         }
 
-        if (offset[1] == 0) {
-            if (s.disperseParticle(x, y, 1, offset[0]) == .success) return;
-        } else {
-            if (s.moveParticle(x, y, target_x, target_y) == .success) return;
+        for (0..mat0.dispersion_rate) |i| {
+            const target_x = x + dispersion_dir * (@as(i8, @intCast(i)) + 1);
+
+            const target_down_cell = s.getBoundsCheck(target_x, y + 1) orelse continue;
+
+            const mat1 = getMaterial(target_down_cell.kind);
+
+            if (mat1.density >= mat0.density) continue;
+
+            const source_idx = locToIndex(x, y);
+            const target_idx = locToIndex(target_x, y + 1);
+
+            s.moveCell(chunk, source_idx, target_idx) catch continue;
+
+            break :outer;
+        }
+
+        for (0..mat0.dispersion_rate) |i| {
+            const target_x = x + dispersion_dir * @as(i8, @intCast(mat0.dispersion_rate - i));
+
+            const target_down_cell = s.getBoundsCheck(target_x, y) orelse continue;
+
+            const mat1 = getMaterial(target_down_cell.kind);
+
+            if (mat1.density >= mat0.density) continue;
+
+            const source_idx = locToIndex(x, y);
+            const target_idx = locToIndex(target_x, y);
+
+            s.moveCell(chunk, source_idx, target_idx) catch continue;
+
+            break :outer;
         }
     }
     //
