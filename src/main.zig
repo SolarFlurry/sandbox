@@ -2,7 +2,6 @@ const std = @import("std");
 const rl = @import("raylib");
 
 const Material = @import("Material.zig");
-const getMaterial = Material.getMaterial;
 
 const cell_size: i32 = 2;
 const screen_width = Sandbox.sandbox_width * cell_size;

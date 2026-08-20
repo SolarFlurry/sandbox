@@ -61,39 +61,6 @@ pub fn deinit(s: *Sandbox) void {
     }
 }
 
-pub fn updateBottomTop(s: *Sandbox, random: std.Random) Sandbox.Error!void {
-    for (0..256) |j| {
-        const y_iter: i32 = 256 - @as(i32, @intCast(j)) - 1;
-        if (y_iter < 0 or y_iter >= sandbox_height) continue;
-
-        const process_row_left = random.boolean();
-
-        for (0..512) |i| {
-            const x_iter: i32 = if (process_row_left)
-                @as(i32, @intCast(i))
-            else
-                512 - @as(i32, @intCast(i)) - 1;
-
-            if (x_iter < 0 or x_iter >= sandbox_width) continue;
-
-            const cell = s.get(x_iter, y_iter);
-
-            if (cell.last_updated_frame == s.current_frame) continue;
-
-            const fall_bias = random.enumValue(FallDir);
-
-            switch (cell.kind) {
-                .none => continue,
-                .sand => s.updateSolid(fall_bias, x_iter, y_iter),
-                .water => s.updateLiquid(fall_bias, x_iter, y_iter, 0),
-                .stone => continue,
-            }
-        }
-    }
-
-    s.current_frame += 1;
-}
-
 pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std.Io.Cancelable || std.Io.ConcurrentError)!void {
     const offsets: [4][2]u8 = .{
         .{ 0, 0 },
@@ -205,37 +172,9 @@ pub fn fill(self: *Sandbox, kind: Material.Index, x: i32, y: i32, width: i32, he
     }
 }
 
-// returns error.AlreadySet if the target cell ahs already been set in the same frame
-pub fn setNoUpdated(self: *Sandbox, kind: Material.Index, x: i32, y: i32) (Error || error{AlreadySet})!void {
-    if (x < 0 or x >= sandbox_width or y < 0 or y >= sandbox_height) return Error.OutOfBounds;
-    const idx = locToIndex(x, y);
-    if (self.buffer[idx].last_updated_frame == self.current_frame) return error.AlreadySet;
-
-    if (kind != .none) self.buffer[idx].last_updated_frame = self.current_frame;
-
-    self.buffer[locToIndex(x, y)].kind = kind;
-}
-
 pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
     if (x < 0 or x >= sandbox_width or y < 0 or y >= sandbox_height) return null;
     return self.get(x, y);
-}
-
-fn moveParticle(s: *Sandbox, x: i32, y: i32, x1: i32, y1: i32) MoveSuccess {
-    const kind = s.get(x, y).kind;
-    if (s.getBoundsCheck(x1, y1)) |cell| {
-        const mat0 = getMaterial(kind);
-        const mat1 = getMaterial(cell.kind);
-        if (mat0.density > mat1.density) {
-            s.setNoUpdated(kind, x1, y1) catch return .reserved;
-
-            if (x != x1) {
-                s.buffer[locToIndex(x, y)].kind = cell.kind;
-            } else s.set(cell.kind, x, y);
-            return .success;
-        }
-    }
-    return .failed;
 }
 
 fn moveCell(s: *Sandbox, chunk: *Chunk, from: usize, to: usize) std.mem.Allocator.Error!void {
@@ -312,23 +251,6 @@ fn updateSolid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32) void {
 
         break;
     }
-}
-
-fn disperseParticle(s: *Sandbox, x: i32, y: i32, dispersion_rate: u8, direction: i8) MoveSuccess {
-    var dispersed = false;
-    for (0..dispersion_rate) |i| {
-        const old_x = x + @as(i32, @intCast(i)) * direction;
-        const new_x = x + @as(i32, @intCast(i + 1)) * direction;
-
-        const moved_down = s.moveParticle(old_x, y, new_x, y + 1);
-        if (moved_down == .success) return .success;
-
-        const result = s.moveParticle(old_x, y, new_x, y);
-        if (result != .success) break;
-        dispersed = true;
-    }
-
-    return if (dispersed) .success else .failed;
 }
 
 fn updateLiquid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32, chunk_x: i32) void {
