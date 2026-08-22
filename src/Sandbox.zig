@@ -10,7 +10,6 @@ const getMaterial = Material.getMaterial;
 allocator: Allocator,
 buffer: []Cell,
 chunks: [sandbox_width * sandbox_height / 64 / 64]Chunk,
-moves: std.ArrayList(Move) = .empty,
 current_frame: u32 = 0,
 
 pub const sandbox_width: u32 = 512;
@@ -18,6 +17,21 @@ pub const sandbox_height: u32 = 256;
 
 const Chunk = struct {
     moves: std.ArrayList(Move) = .empty,
+    dirty_rect: DirtyRect = .empty,
+
+    const DirtyRect = struct {
+        const empty: DirtyRect = .{
+            .min_x = 63,
+            .min_y = 63,
+            .max_x = 0,
+            .max_y = 0,
+        };
+
+        min_x: u8,
+        min_y: u8,
+        max_x: u8,
+        max_y: u8,
+    };
 };
 
 const Move = struct {
@@ -52,14 +66,13 @@ pub fn init(allocator: Allocator) Allocator.Error!Sandbox {
     };
     @memset(sandbox.buffer, .{
         // .last_updated_frame = 0,
-        .kind = .none,
+        .kind = .empty,
     });
     return sandbox;
 }
 
 pub fn deinit(s: *Sandbox) void {
     s.allocator.free(s.buffer);
-    s.moves.deinit(s.allocator);
     for (&s.chunks) |*chunk| {
         chunk.moves.deinit(s.allocator);
     }
@@ -105,14 +118,29 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
         try group.await(io);
     }
 
+    try s.resolveMoves(random);
+
+    s.current_frame += 1;
+}
+
+fn resolveMoves(s: *Sandbox, random: std.Random) Allocator.Error!void {
+    var total_moves: u32 = 1;
+
     for (&s.chunks) |*chunk| {
-        try s.moves.appendSlice(s.allocator, chunk.moves.items);
+        total_moves += @intCast(chunk.moves.items.len);
+    }
+
+    var all_moves: std.ArrayList(Move) = try .initCapacity(s.allocator, total_moves);
+    defer all_moves.deinit(s.allocator);
+
+    for (&s.chunks) |*chunk| {
+        all_moves.appendSliceAssumeCapacity(chunk.moves.items);
         chunk.moves.clearRetainingCapacity();
     }
 
     std.mem.sort(
         Move,
-        s.moves.items,
+        all_moves.items,
         {},
         struct {
             fn inner(_: void, a: Move, b: Move) bool {
@@ -121,14 +149,14 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
         }.inner,
     );
 
-    try s.moves.append(s.allocator, .{ .from = 0, .to = 0 });
+    all_moves.appendAssumeCapacity(.{ .from = 0, .to = 0 });
 
     var dest_start: usize = 0;
-    for (0..s.moves.items.len - 1) |i| {
-        if (s.moves.items[i].to != s.moves.items[i + 1].to) {
+    for (0..all_moves.items.len - 1) |i| {
+        if (all_moves.items[i].to != all_moves.items[i + 1].to) {
             const idx = random.intRangeAtMost(usize, dest_start, i);
 
-            const move = s.moves.items[idx];
+            const move = all_moves.items[idx];
             const kind = s.buffer[move.from].kind;
 
             s.buffer[move.from] = s.buffer[move.to];
@@ -140,10 +168,6 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
             dest_start = i + 1;
         }
     }
-
-    s.moves.clearRetainingCapacity();
-
-    s.current_frame += 1;
 }
 
 fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void {
@@ -167,16 +191,22 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
             if (x_iter < 0 or x_iter >= sandbox_width) continue;
 
             const cell = s.get(x_iter, y_iter);
+            const material = getMaterial(cell.kind);
 
             // if (cell.last_updated_frame == s.current_frame) continue;
 
             const fall_bias = random.enumValue(FallDir);
 
             switch (cell.kind) {
-                .none => continue,
-                .sand => s.updateSolid(chunk, fall_bias, x_iter, y_iter),
-                .water => s.updateLiquid(chunk, fall_bias, x_iter, y_iter, x),
+                .empty => continue,
                 .stone => continue,
+                else => {},
+            }
+
+            if (material.is_fluid) {
+                s.updateLiquid(chunk, fall_bias, x_iter, y_iter, x);
+            } else {
+                s.updateSolid(chunk, fall_bias, x_iter, y_iter);
             }
         }
     }
@@ -224,41 +254,6 @@ fn moveCell(s: *Sandbox, chunk: *Chunk, from: u32, to: u32) Allocator.Error!void
         .from = from,
         .to = to,
     });
-}
-
-fn resolveMoves(s: *Sandbox, chunk: *Chunk, random: std.Random) Allocator.Error!void {
-    std.mem.sort(
-        Move,
-        chunk.moves.items,
-        {},
-        struct {
-            pub fn inner(_: void, a: Move, b: Move) bool {
-                return a.to < b.to;
-            }
-        }.inner,
-    );
-
-    try chunk.moves.append(s.allocator, .{ .from = 0, .to = 0 });
-
-    var dest_start: usize = 0;
-    for (0..chunk.moves.items.len - 1) |i| {
-        if (chunk.moves.items[i].to != chunk.moves.items[i + 1].to) {
-            const idx = random.intRangeAtMost(usize, dest_start, i);
-
-            const move = chunk.moves.items[idx];
-            const kind = s.buffer[move.from].kind;
-
-            s.buffer[move.from] = s.buffer[move.to];
-            s.buffer[move.to] = .{
-                .kind = kind,
-                .last_updated_frame = s.current_frame,
-            };
-
-            dest_start = i + 1;
-        }
-    }
-
-    chunk.moves.clearRetainingCapacity();
 }
 
 fn updateSolid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32) void {

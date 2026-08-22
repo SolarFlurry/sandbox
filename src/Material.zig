@@ -5,11 +5,11 @@ const rl = @import("raylib");
 
 color: rl.Color,
 density: u32,
-is_liquid: bool,
+is_fluid: bool,
 dispersion_rate: u8,
 
 pub const Index = enum(u8) {
-    none = 0,
+    empty = 0,
     sand,
     water,
     stone,
@@ -24,28 +24,28 @@ pub const materials: []const Material = &.{
     Material{
         .color = .blank,
         .density = 0,
-        .is_liquid = false,
+        .is_fluid = false,
         .dispersion_rate = 0,
     },
     // sand
     Material{
         .color = .yellow,
         .density = 10,
-        .is_liquid = false,
+        .is_fluid = false,
         .dispersion_rate = 0,
     },
     // water
     Material{
         .color = .blue,
         .density = 1,
-        .is_liquid = true,
+        .is_fluid = true,
         .dispersion_rate = 2,
     },
     // stone
     Material{
         .color = .light_gray,
         .density = 20,
-        .is_liquid = false,
+        .is_fluid = false,
         .dispersion_rate = 12,
     },
 };
