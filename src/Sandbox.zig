@@ -3,11 +3,14 @@ const Sandbox = @This();
 const std = @import("std");
 const Material = @import("Material.zig");
 
+const Allocator = std.mem.Allocator;
+
 const getMaterial = Material.getMaterial;
 
-allocator: std.mem.Allocator,
+allocator: Allocator,
 buffer: []Cell,
 chunks: [sandbox_width * sandbox_height / 64 / 64]Chunk,
+moves: std.ArrayList(Move) = .empty,
 current_frame: u32 = 0,
 
 pub const sandbox_width: u32 = 512;
@@ -18,13 +21,13 @@ const Chunk = struct {
 };
 
 const Move = struct {
-    from: usize,
-    to: usize,
+    from: u32,
+    to: u32,
 };
 
 const Cell = struct {
     kind: Material.Index,
-    last_updated_frame: u32,
+    // last_updated_frame: u32,
 };
 const MoveSuccess = enum {
     success,
@@ -41,14 +44,14 @@ const FallDir = enum {
 
 pub const Error = error{OutOfBounds};
 
-pub fn init(allocator: std.mem.Allocator) std.mem.Allocator.Error!Sandbox {
+pub fn init(allocator: Allocator) Allocator.Error!Sandbox {
     const sandbox: Sandbox = .{
         .allocator = allocator,
         .buffer = try allocator.alloc(Cell, @intCast(sandbox_width * sandbox_height)),
         .chunks = @splat(.{}),
     };
     @memset(sandbox.buffer, .{
-        .last_updated_frame = 0,
+        // .last_updated_frame = 0,
         .kind = .none,
     });
     return sandbox;
@@ -56,12 +59,13 @@ pub fn init(allocator: std.mem.Allocator) std.mem.Allocator.Error!Sandbox {
 
 pub fn deinit(s: *Sandbox) void {
     s.allocator.free(s.buffer);
+    s.moves.deinit(s.allocator);
     for (&s.chunks) |*chunk| {
         chunk.moves.deinit(s.allocator);
     }
 }
 
-pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std.Io.Cancelable || std.Io.ConcurrentError)!void {
+pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std.Io.Cancelable || std.Io.ConcurrentError || Allocator.Error)!void {
     const offsets: [4][2]u8 = .{
         .{ 0, 0 },
         .{ 0, 1 },
@@ -101,6 +105,44 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
         try group.await(io);
     }
 
+    for (&s.chunks) |*chunk| {
+        try s.moves.appendSlice(s.allocator, chunk.moves.items);
+        chunk.moves.clearRetainingCapacity();
+    }
+
+    std.mem.sort(
+        Move,
+        s.moves.items,
+        {},
+        struct {
+            fn inner(_: void, a: Move, b: Move) bool {
+                return a.to < b.to;
+            }
+        }.inner,
+    );
+
+    try s.moves.append(s.allocator, .{ .from = 0, .to = 0 });
+
+    var dest_start: usize = 0;
+    for (0..s.moves.items.len - 1) |i| {
+        if (s.moves.items[i].to != s.moves.items[i + 1].to) {
+            const idx = random.intRangeAtMost(usize, dest_start, i);
+
+            const move = s.moves.items[idx];
+            const kind = s.buffer[move.from].kind;
+
+            s.buffer[move.from] = s.buffer[move.to];
+            s.buffer[move.to] = .{
+                .kind = kind,
+                // .last_updated_frame = s.current_frame,
+            };
+
+            dest_start = i + 1;
+        }
+    }
+
+    s.moves.clearRetainingCapacity();
+
     s.current_frame += 1;
 }
 
@@ -126,7 +168,7 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
 
             const cell = s.get(x_iter, y_iter);
 
-            if (cell.last_updated_frame == s.current_frame) continue;
+            // if (cell.last_updated_frame == s.current_frame) continue;
 
             const fall_bias = random.enumValue(FallDir);
 
@@ -139,10 +181,10 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
         }
     }
 
-    s.resolveMoves(chunk, random) catch {};
+    // s.resolveMoves(chunk, random) catch {};
 }
 
-pub fn locToIndex(x: i32, y: i32) usize {
+pub fn locToIndex(x: i32, y: i32) u32 {
     return @intCast(y * sandbox_width + x);
 }
 
@@ -153,9 +195,9 @@ pub fn get(self: *Sandbox, x: i32, y: i32) Cell {
 pub fn set(self: *Sandbox, kind: Material.Index, x: i32, y: i32) void {
     const idx = locToIndex(x, y);
 
-    if (kind != .none) self.buffer[idx].last_updated_frame = self.current_frame;
+    // if (kind != .none) self.buffer[idx].last_updated_frame = self.current_frame;
 
-    self.buffer[locToIndex(x, y)].kind = kind;
+    self.buffer[idx].kind = kind;
 }
 
 pub fn setBoundsCheck(s: *Sandbox, kind: Material.Index, x: i32, y: i32) bool {
@@ -177,14 +219,14 @@ pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
     return self.get(x, y);
 }
 
-fn moveCell(s: *Sandbox, chunk: *Chunk, from: usize, to: usize) std.mem.Allocator.Error!void {
+fn moveCell(s: *Sandbox, chunk: *Chunk, from: u32, to: u32) Allocator.Error!void {
     try chunk.moves.append(s.allocator, .{
         .from = from,
         .to = to,
     });
 }
 
-fn resolveMoves(s: *Sandbox, chunk: *Chunk, random: std.Random) std.mem.Allocator.Error!void {
+fn resolveMoves(s: *Sandbox, chunk: *Chunk, random: std.Random) Allocator.Error!void {
     std.mem.sort(
         Move,
         chunk.moves.items,
@@ -235,7 +277,7 @@ fn updateSolid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32) void {
 
         const target_cell = s.getBoundsCheck(target_x, target_y) orelse continue;
 
-        if (target_cell.last_updated_frame == s.current_frame) continue;
+        // if (target_cell.last_updated_frame == s.current_frame) continue;
 
         const kind = s.get(x, y).kind;
 
@@ -271,7 +313,7 @@ fn updateLiquid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32, chunk
         if (dispersion_dir == 0) {
             const target_cell = s.getBoundsCheck(x, y + 1) orelse continue;
 
-            if (target_cell.last_updated_frame == s.current_frame) continue;
+            // if (target_cell.last_updated_frame == s.current_frame) continue;
 
             const mat1 = getMaterial(target_cell.kind);
 

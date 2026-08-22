@@ -29,21 +29,21 @@ const Render = struct {
         allocator.free(r.color_buffer);
         rl.unloadTexture(r.texture);
     }
-};
 
-pub fn render(r: *Render, s: *Sandbox) void {
-    var idx: usize = 0;
-    for (0..Sandbox.sandbox_height) |j| {
-        for (0..Sandbox.sandbox_width) |i| {
-            const cell = s.buffer[Sandbox.locToIndex(@intCast(i), @intCast(j))];
+    pub fn render(r: *Render, s: *Sandbox) void {
+        var idx: usize = 0;
+        for (0..Sandbox.sandbox_height) |j| {
+            for (0..Sandbox.sandbox_width) |i| {
+                const cell = s.buffer[Sandbox.locToIndex(@intCast(i), @intCast(j))];
 
-            r.color_buffer[idx] = Material.materials[@intFromEnum(cell.kind)].color;
-            idx += 1;
+                r.color_buffer[idx] = Material.materials[@intFromEnum(cell.kind)].color;
+                idx += 1;
+            }
         }
-    }
 
-    rl.updateTexture(r.texture, r.color_buffer.ptr);
-}
+        rl.updateTexture(r.texture, r.color_buffer.ptr);
+    }
+};
 
 pub fn main(init: std.process.Init) !void {
     var sandbox: Sandbox = try .init(init.gpa);
@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
         if (rl.isKeyDown(.equal)) brush_size +|= 1;
         if (rl.isKeyPressed(.r)) @memset(sandbox.buffer, .{
             .kind = .none,
-            .last_updated_frame = sandbox.current_frame,
+            // .last_updated_frame = sandbox.current_frame,
         });
 
         if (rl.isKeyPressed(.one)) brush_material = .sand;
@@ -97,7 +97,7 @@ pub fn main(init: std.process.Init) !void {
             try sandbox.update(init.io, random);
         }
 
-        render(&render_ctx, &sandbox);
+        render_ctx.render(&sandbox);
 
         rl.beginDrawing();
 
