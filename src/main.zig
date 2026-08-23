@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
         if (rl.isKeyDown(.equal)) brush_size +|= 1;
         if (rl.isKeyPressed(.r)) @memset(sandbox.buffer, .{
             .kind = .empty,
-            // .last_updated_frame = sandbox.current_frame,
+            .next_kind = .none,
         });
 
         if (rl.isKeyPressed(.one)) brush_material = .sand;

@@ -16,7 +16,6 @@ pub const sandbox_width: u32 = 512;
 pub const sandbox_height: u32 = 256;
 
 const Chunk = struct {
-    moves: std.ArrayList(Move) = .empty,
     dirty_rect: DirtyRect = .empty,
 
     const DirtyRect = struct {
@@ -41,7 +40,8 @@ const Move = struct {
 
 const Cell = struct {
     kind: Material.Index,
-    // last_updated_frame: u32,
+    // what the kind will be set to at the end of the frame
+    next_kind: Material.OptionalIndex,
 };
 const MoveSuccess = enum {
     success,
@@ -65,17 +65,14 @@ pub fn init(allocator: Allocator) Allocator.Error!Sandbox {
         .chunks = @splat(.{}),
     };
     @memset(sandbox.buffer, .{
-        // .last_updated_frame = 0,
         .kind = .empty,
+        .next_kind = .none,
     });
     return sandbox;
 }
 
 pub fn deinit(s: *Sandbox) void {
     s.allocator.free(s.buffer);
-    for (&s.chunks) |*chunk| {
-        chunk.moves.deinit(s.allocator);
-    }
 }
 
 pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std.Io.Cancelable || std.Io.ConcurrentError || Allocator.Error)!void {
@@ -118,56 +115,14 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
         try group.await(io);
     }
 
-    try s.resolveMoves(random);
+    for (s.buffer) |*cell| {
+        if (cell.next_kind != .none) {
+            cell.kind = .fromOptional(cell.next_kind);
+        }
+        cell.next_kind = .none;
+    }
 
     s.current_frame += 1;
-}
-
-fn resolveMoves(s: *Sandbox, random: std.Random) Allocator.Error!void {
-    var total_moves: u32 = 1;
-
-    for (&s.chunks) |*chunk| {
-        total_moves += @intCast(chunk.moves.items.len);
-    }
-
-    var all_moves: std.ArrayList(Move) = try .initCapacity(s.allocator, total_moves);
-    defer all_moves.deinit(s.allocator);
-
-    for (&s.chunks) |*chunk| {
-        all_moves.appendSliceAssumeCapacity(chunk.moves.items);
-        chunk.moves.clearRetainingCapacity();
-    }
-
-    std.mem.sort(
-        Move,
-        all_moves.items,
-        {},
-        struct {
-            fn inner(_: void, a: Move, b: Move) bool {
-                return a.to < b.to;
-            }
-        }.inner,
-    );
-
-    all_moves.appendAssumeCapacity(.{ .from = 0, .to = 0 });
-
-    var dest_start: usize = 0;
-    for (0..all_moves.items.len - 1) |i| {
-        if (all_moves.items[i].to != all_moves.items[i + 1].to) {
-            const idx = random.intRangeAtMost(usize, dest_start, i);
-
-            const move = all_moves.items[idx];
-            const kind = s.buffer[move.from].kind;
-
-            s.buffer[move.from] = s.buffer[move.to];
-            s.buffer[move.to] = .{
-                .kind = kind,
-                // .last_updated_frame = s.current_frame,
-            };
-
-            dest_start = i + 1;
-        }
-    }
 }
 
 fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void {
@@ -250,10 +205,15 @@ pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
 }
 
 fn moveCell(s: *Sandbox, chunk: *Chunk, from: u32, to: u32) Allocator.Error!void {
-    try chunk.moves.append(s.allocator, .{
-        .from = from,
-        .to = to,
-    });
+    _ = chunk;
+
+    const from_cell = &s.buffer[from];
+    const to_cell = &s.buffer[to];
+
+    if (to_cell.next_kind != .none) return;
+
+    from_cell.next_kind = to_cell.kind.toOptional();
+    to_cell.next_kind = from_cell.kind.toOptional();
 }
 
 fn updateSolid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32) void {
