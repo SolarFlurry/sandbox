@@ -77,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
             const x: i32 = @trunc(mouse_pos.x / cell_size - brush_size / 2);
             const y: i32 = @trunc(mouse_pos.y / cell_size - brush_size / 2);
 
-            sandbox.fill(.none, x, y, brush_size, brush_size);
+            sandbox.fill(.empty, x, y, brush_size, brush_size);
         }
 
         if (rl.isKeyPressed(.space)) paused = !paused;
@@ -85,7 +85,7 @@ pub fn main(init: std.process.Init) !void {
         if (rl.isKeyDown(.minus)) brush_size -|= 1;
         if (rl.isKeyDown(.equal)) brush_size +|= 1;
         if (rl.isKeyPressed(.r)) @memset(sandbox.buffer, .{
-            .kind = .none,
+            .kind = .empty,
             // .last_updated_frame = sandbox.current_frame,
         });
 
