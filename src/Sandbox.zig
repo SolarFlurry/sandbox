@@ -18,6 +18,7 @@ pub const sandbox_height: u32 = 256;
 const Chunk = struct {
     moves: std.ArrayList(Move) = .empty,
     dirty_rect: DirtyRect = .empty,
+    next_frame_dirty_rect: DirtyRect = .empty,
 
     const DirtyRect = struct {
         const empty: DirtyRect = .{
@@ -25,6 +26,13 @@ const Chunk = struct {
             .min_y = 63,
             .max_x = 0,
             .max_y = 0,
+        };
+
+        const full: DirtyRect = .{
+            .min_x = 0,
+            .min_y = 0,
+            .max_x = 63,
+            .max_y = 63,
         };
 
         min_x: u8,
@@ -92,7 +100,8 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
 
     var row_biases: [sandbox_height]bool = undefined;
     for (&row_biases) |*x| {
-        x.* = random.boolean();
+        // x.* = random.boolean();
+        x.* = true;
     }
 
     const jitter_x = 0;
@@ -119,6 +128,7 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
     }
 
     try s.resolveMoves(random);
+    s.updateDirtyRects();
 
     s.current_frame += 1;
 }
@@ -165,6 +175,14 @@ fn resolveMoves(s: *Sandbox, random: std.Random) Allocator.Error!void {
                 // .last_updated_frame = s.current_frame,
             };
 
+            const from_x: i32 = @intCast(move.from % sandbox_width);
+            const from_y: i32 = @intCast(move.from / sandbox_width);
+            const to_x: i32 = @intCast(move.to % sandbox_width);
+            const to_y: i32 = @intCast(move.to / sandbox_width);
+
+            s.addDirtyRectArea(from_x - 2, from_y - 2, 3, 3);
+            s.addDirtyRectArea(to_x - 2, to_y - 2, 3, 3);
+
             dest_start = i + 1;
         }
     }
@@ -174,15 +192,19 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
 
-    const chunk = &s.chunks[@as(usize, @intCast(y)) * sandbox_width / 64 / 64 + @as(usize, @intCast(x)) / 64];
+    const chunk = &s.chunks[@as(usize, @intCast(y)) / 64 * (sandbox_width / 64) + @as(usize, @intCast(x)) / 64];
+    const dirty_rect = chunk.dirty_rect;
 
-    for (0..64) |j| {
-        const y_iter: i32 = 64 - @as(i32, @intCast(j)) - 1 + y;
+    if (dirty_rect.min_y > dirty_rect.max_x or dirty_rect.min_x > dirty_rect.max_x) return;
+
+    for (dirty_rect.min_y..dirty_rect.max_y + 1) |j| {
+        // const y_iter: i32 = 64 - @as(i32, @intCast(j)) - 1 + y;
+        const y_iter = @as(i32, @intCast(j)) + y;
         if (y_iter < 0 or y_iter >= sandbox_height) continue;
 
         const process_row_left = row_biases[@intCast(y_iter)];
 
-        for (0..64) |i| {
+        for (dirty_rect.min_x..dirty_rect.max_x + 1) |i| {
             const x_iter: i32 = if (process_row_left)
                 @as(i32, @intCast(i)) + x
             else
@@ -242,11 +264,55 @@ pub fn fill(self: *Sandbox, kind: Material.Index, x: i32, y: i32, width: i32, he
             _ = self.setBoundsCheck(kind, x + @as(i32, @intCast(i)), y + @as(i32, @intCast(j)));
         }
     }
+
+    self.addDirtyRectArea(x - 1, y - 1, width + 1, height + 1);
 }
 
 pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
     if (x < 0 or x >= sandbox_width or y < 0 or y >= sandbox_height) return null;
     return self.get(x, y);
+}
+
+// updates the dirty rect with an inclusive (contains left_x+width and top_y+height) rectangle region
+pub fn addDirtyRectArea(s: *Sandbox, left_x: i32, top_y: i32, width: i32, height: i32) void {
+    const chunk_positions: [4][2]i32 = .{
+        .{ @intCast(@divTrunc(left_x, 64)), @intCast(@divTrunc(top_y, 64)) },
+        .{ @intCast(@divTrunc(left_x, 64)), @intCast(@divTrunc(top_y + height, 64)) },
+        .{ @intCast(@divTrunc(left_x + width, 64)), @intCast(@divTrunc(top_y, 64)) },
+        .{ @intCast(@divTrunc(left_x + width, 64)), @intCast(@divTrunc(top_y + height, 64)) },
+    };
+
+    for (chunk_positions) |chunk_pos| {
+        const idx: usize = @intCast(chunk_pos[1] * @divTrunc(sandbox_width, 64) + chunk_pos[0]);
+        if (idx >= s.chunks.len) continue;
+
+        const chunk = &s.chunks[idx];
+
+        chunk.next_frame_dirty_rect.min_x = @min(
+            @max(left_x - chunk_pos[0] * 64, 0),
+            chunk.next_frame_dirty_rect.min_x,
+        );
+        chunk.next_frame_dirty_rect.max_x = @intCast(@max(
+            @min(left_x + width - chunk_pos[0] * 64 + 32, 63),
+            chunk.next_frame_dirty_rect.max_x,
+        ));
+
+        chunk.next_frame_dirty_rect.min_y = @min(
+            @max(top_y - chunk_pos[1] * 64 - 32, 0),
+            chunk.next_frame_dirty_rect.min_y,
+        );
+        chunk.next_frame_dirty_rect.max_y = @intCast(@max(
+            @min(top_y + height - chunk_pos[1] * 64, 63),
+            chunk.next_frame_dirty_rect.max_y,
+        ));
+    }
+}
+
+pub fn updateDirtyRects(s: *Sandbox) void {
+    for (&s.chunks) |*chunk| {
+        chunk.dirty_rect = chunk.next_frame_dirty_rect;
+        chunk.next_frame_dirty_rect = .empty;
+    }
 }
 
 fn moveCell(s: *Sandbox, chunk: *Chunk, from: u32, to: u32) Allocator.Error!void {

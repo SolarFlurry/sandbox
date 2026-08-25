@@ -9,6 +9,23 @@ const screen_height = Sandbox.sandbox_height * cell_size;
 
 const Sandbox = @import("Sandbox.zig");
 
+fn renderDirtyRects(s: *const Sandbox) void {
+    for (&s.chunks, 0..) |*chunk, i| {
+        if (chunk.dirty_rect.min_y > chunk.dirty_rect.max_x or chunk.dirty_rect.min_x > chunk.dirty_rect.max_x) continue;
+
+        const x: i32 = @intCast(i % (Sandbox.sandbox_width / 64) * 64);
+        const y: i32 = @intCast(i / (Sandbox.sandbox_width / 64) * 64);
+
+        rl.drawRectangleLines(
+            (x + chunk.dirty_rect.min_x) * cell_size,
+            (y + chunk.dirty_rect.min_y) * cell_size,
+            (chunk.dirty_rect.max_x - chunk.dirty_rect.min_x + 1) * cell_size,
+            (chunk.dirty_rect.max_y - chunk.dirty_rect.min_y + 1) * cell_size,
+            .green,
+        );
+    }
+}
+
 const Render = struct {
     color_buffer: []rl.Color,
     texture: rl.Texture2D,
@@ -104,6 +121,8 @@ pub fn main(init: std.process.Init) !void {
         rl.clearBackground(.dark_gray);
 
         rl.drawTextureEx(render_ctx.texture, .init(0, 0), 0, cell_size, .white);
+
+        renderDirtyRects(&sandbox);
 
         rl.drawRectangleLines(
             @as(i32, @trunc(mouse_pos.x / cell_size - brush_size / 2)) * cell_size,
