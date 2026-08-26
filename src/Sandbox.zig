@@ -265,7 +265,7 @@ pub fn updateDirtyRects(s: *Sandbox) void {
     }
 }
 
-fn moveCell(s: *Sandbox, chunk: *Chunk, from: u32, to: u32) Allocator.Error!void {
+fn moveCell(s: *Sandbox, chunk: *Chunk, from: u32, to: u32) void {
     _ = chunk;
 
     const from_cell = &s.buffer[from];
@@ -313,7 +313,7 @@ fn updateSolid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32) void {
         const source_idx = locToIndex(x, y);
         const target_idx = locToIndex(target_x, target_y);
 
-        s.moveCell(chunk, source_idx, target_idx) catch continue;
+        s.moveCell(chunk, source_idx, target_idx);
 
         break;
     }
@@ -346,7 +346,7 @@ fn updateLiquid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32, chunk
             const source_idx = locToIndex(x, y);
             const target_idx = locToIndex(x, y + 1);
 
-            s.moveCell(chunk, source_idx, target_idx) catch continue;
+            s.moveCell(chunk, source_idx, target_idx);
 
             break;
         }
@@ -363,7 +363,7 @@ fn updateLiquid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32, chunk
             const source_idx = locToIndex(x, y);
             const target_idx = locToIndex(target_x, y + 1);
 
-            s.moveCell(chunk, source_idx, target_idx) catch continue;
+            s.moveCell(chunk, source_idx, target_idx);
 
             break :outer;
         }
@@ -380,7 +380,7 @@ fn updateLiquid(s: *Sandbox, chunk: *Chunk, bias: FallDir, x: i32, y: i32, chunk
             const source_idx = locToIndex(x, y);
             const target_idx = locToIndex(target_x, y);
 
-            s.moveCell(chunk, source_idx, target_idx) catch continue;
+            s.moveCell(chunk, source_idx, target_idx);
 
             break :outer;
         }
