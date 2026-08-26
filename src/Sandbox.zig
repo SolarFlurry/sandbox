@@ -100,8 +100,7 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
 
     var row_biases: [sandbox_height]bool = undefined;
     for (&row_biases) |*x| {
-        // x.* = random.boolean();
-        x.* = true;
+        x.* = random.boolean();
     }
 
     const jitter_x = 0;
@@ -180,8 +179,8 @@ fn resolveMoves(s: *Sandbox, random: std.Random) Allocator.Error!void {
             const to_x: i32 = @intCast(move.to % sandbox_width);
             const to_y: i32 = @intCast(move.to / sandbox_width);
 
-            s.addDirtyRectArea(from_x - 2, from_y - 2, 3, 3);
-            s.addDirtyRectArea(to_x - 2, to_y - 2, 3, 3);
+            s.addDirtyRectArea(from_x - 2, from_y - 2, 4, 4);
+            s.addDirtyRectArea(to_x - 2, to_y - 2, 4, 4);
 
             dest_start = i + 1;
         }
@@ -195,7 +194,7 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
     const chunk = &s.chunks[@as(usize, @intCast(y)) / 64 * (sandbox_width / 64) + @as(usize, @intCast(x)) / 64];
     const dirty_rect = chunk.dirty_rect;
 
-    if (dirty_rect.min_y > dirty_rect.max_x or dirty_rect.min_x > dirty_rect.max_x) return;
+    if (dirty_rect.min_y > dirty_rect.max_y or dirty_rect.min_x > dirty_rect.max_x) return;
 
     for (dirty_rect.min_y..dirty_rect.max_y + 1) |j| {
         // const y_iter: i32 = 64 - @as(i32, @intCast(j)) - 1 + y;
@@ -204,11 +203,11 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
 
         const process_row_left = row_biases[@intCast(y_iter)];
 
-        for (dirty_rect.min_x..dirty_rect.max_x + 1) |i| {
+        for (0..dirty_rect.max_x - dirty_rect.min_x + 1) |i| {
             const x_iter: i32 = if (process_row_left)
-                @as(i32, @intCast(i)) + x
+                @as(i32, @intCast(i)) + x + dirty_rect.min_x
             else
-                64 - @as(i32, @intCast(i)) - 1 + x;
+                dirty_rect.max_x - dirty_rect.min_x - @as(i32, @intCast(i)) + x + dirty_rect.min_x;
 
             if (x_iter < 0 or x_iter >= sandbox_width) continue;
 
@@ -265,7 +264,7 @@ pub fn fill(self: *Sandbox, kind: Material.Index, x: i32, y: i32, width: i32, he
         }
     }
 
-    self.addDirtyRectArea(x - 1, y - 1, width + 1, height + 1);
+    self.addDirtyRectArea(x - 1, y - 1, width + 2, height + 2);
 }
 
 pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
@@ -273,36 +272,39 @@ pub fn getBoundsCheck(self: *Sandbox, x: i32, y: i32) ?Cell {
     return self.get(x, y);
 }
 
-// updates the dirty rect with an inclusive (contains left_x+width and top_y+height) rectangle region
+// updates the dirty rect with an exclusive (excludes left_x+width and top_y+height) rectangle region
 pub fn addDirtyRectArea(s: *Sandbox, left_x: i32, top_y: i32, width: i32, height: i32) void {
     const chunk_positions: [4][2]i32 = .{
         .{ @intCast(@divTrunc(left_x, 64)), @intCast(@divTrunc(top_y, 64)) },
-        .{ @intCast(@divTrunc(left_x, 64)), @intCast(@divTrunc(top_y + height, 64)) },
-        .{ @intCast(@divTrunc(left_x + width, 64)), @intCast(@divTrunc(top_y, 64)) },
-        .{ @intCast(@divTrunc(left_x + width, 64)), @intCast(@divTrunc(top_y + height, 64)) },
+        .{ @intCast(@divTrunc(left_x, 64)), @intCast(@divTrunc(top_y + height - 1, 64)) },
+        .{ @intCast(@divTrunc(left_x + width - 1, 64)), @intCast(@divTrunc(top_y, 64)) },
+        .{ @intCast(@divTrunc(left_x + width - 1, 64)), @intCast(@divTrunc(top_y + height - 1, 64)) },
     };
 
     for (chunk_positions) |chunk_pos| {
+        const chunk_world_x = chunk_pos[0] * 64;
+        const chunk_world_y = chunk_pos[1] * 64;
+
         const idx: usize = @intCast(chunk_pos[1] * @divTrunc(sandbox_width, 64) + chunk_pos[0]);
         if (idx >= s.chunks.len) continue;
 
         const chunk = &s.chunks[idx];
 
         chunk.next_frame_dirty_rect.min_x = @min(
-            @max(left_x - chunk_pos[0] * 64, 0),
+            @max(left_x - chunk_world_x, 0),
             chunk.next_frame_dirty_rect.min_x,
         );
         chunk.next_frame_dirty_rect.max_x = @intCast(@max(
-            @min(left_x + width - chunk_pos[0] * 64 + 32, 63),
+            @min(left_x + width - 1 - chunk_world_x, 63),
             chunk.next_frame_dirty_rect.max_x,
         ));
 
         chunk.next_frame_dirty_rect.min_y = @min(
-            @max(top_y - chunk_pos[1] * 64 - 32, 0),
+            @max(top_y - chunk_world_y, 0),
             chunk.next_frame_dirty_rect.min_y,
         );
         chunk.next_frame_dirty_rect.max_y = @intCast(@max(
-            @min(top_y + height - chunk_pos[1] * 64, 63),
+            @min(top_y + height - 1 - chunk_world_y, 63),
             chunk.next_frame_dirty_rect.max_y,
         ));
     }
