@@ -135,61 +135,6 @@ pub fn update(s: *Sandbox, io: std.Io, random: std.Random) (Sandbox.Error || std
     s.current_frame += 1;
 }
 
-fn resolveMoves(s: *Sandbox, random: std.Random) Allocator.Error!void {
-    var total_moves: u32 = 1;
-
-    for (&s.chunks) |*chunk| {
-        total_moves += @intCast(chunk.moves.items.len);
-    }
-
-    var all_moves: std.ArrayList(Move) = try .initCapacity(s.allocator, total_moves);
-    defer all_moves.deinit(s.allocator);
-
-    for (&s.chunks) |*chunk| {
-        all_moves.appendSliceAssumeCapacity(chunk.moves.items);
-        chunk.moves.clearRetainingCapacity();
-    }
-
-    std.mem.sort(
-        Move,
-        all_moves.items,
-        {},
-        struct {
-            fn inner(_: void, a: Move, b: Move) bool {
-                return a.to < b.to;
-            }
-        }.inner,
-    );
-
-    all_moves.appendAssumeCapacity(.{ .from = 0, .to = 0 });
-
-    var dest_start: usize = 0;
-    for (0..all_moves.items.len - 1) |i| {
-        if (all_moves.items[i].to != all_moves.items[i + 1].to) {
-            const idx = random.intRangeAtMost(usize, dest_start, i);
-
-            const move = all_moves.items[idx];
-            const kind = s.buffer[move.from].kind;
-
-            s.buffer[move.from] = s.buffer[move.to];
-            s.buffer[move.to] = .{
-                .kind = kind,
-                // .last_updated_frame = s.current_frame,
-            };
-
-            const from_x: i32 = @intCast(move.from % sandbox_width);
-            const from_y: i32 = @intCast(move.from / sandbox_width);
-            const to_x: i32 = @intCast(move.to % sandbox_width);
-            const to_y: i32 = @intCast(move.to / sandbox_width);
-
-            s.addDirtyRectArea(from_x - 2, from_y - 2, 4, 4);
-            s.addDirtyRectArea(to_x - 2, to_y - 2, 4, 4);
-
-            dest_start = i + 1;
-        }
-    }
-}
-
 fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void {
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
