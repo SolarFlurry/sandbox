@@ -11,7 +11,7 @@ const Sandbox = @import("Sandbox.zig");
 
 fn renderDirtyRects(s: *const Sandbox) void {
     for (&s.chunks, 0..) |*chunk, i| {
-        if (chunk.dirty_rect.min_y > chunk.dirty_rect.max_x or chunk.dirty_rect.min_x > chunk.dirty_rect.max_x) continue;
+        if (chunk.dirty_rect.min_y > chunk.dirty_rect.max_y or chunk.dirty_rect.min_x > chunk.dirty_rect.max_x) continue;
 
         const x: i32 = @intCast(i % (Sandbox.sandbox_width / 64) * 64);
         const y: i32 = @intCast(i / (Sandbox.sandbox_width / 64) * 64);
