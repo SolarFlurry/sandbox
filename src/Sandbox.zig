@@ -162,7 +162,7 @@ fn updateSquare(s: *Sandbox, seed: u64, x: i32, y: i32, row_biases: []bool) void
             const cell = s.get(x_iter, y_iter);
             const material = getMaterial(cell.kind);
 
-            // if (cell.last_updated_frame == s.current_frame) continue;
+            if (cell.next_kind != .none) continue;
 
             const fall_bias = random.enumValue(FallDir);
 
