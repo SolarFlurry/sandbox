@@ -11,7 +11,7 @@ This project is a 2D sandbox engine/simulation.
 - Performant: maintains as low tick time as possible, within a cap
 - Aesthetically pleasing: supports shaders for materials and all materials look cool.
 
-## Contributing
+## Installing
 Either fork and PR or clone and push:
 ```sh
 git clone https://github.com/SolarFlurry/sandbox.git
